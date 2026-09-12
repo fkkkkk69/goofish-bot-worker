@@ -7,4 +7,4 @@ binding = "SUBSCRIBERS"
 id = "c318508642964c7b8186b71dd9efec59"
 
 [triggers]
-crons = ["0 * * * *"]
+crons = ["*/15 * * * *"]
