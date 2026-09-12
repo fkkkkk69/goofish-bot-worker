@@ -5,3 +5,6 @@ compatibility_date = "2024-01-01"
 [[kv_namespaces]]
 binding = "SUBSCRIBERS"
 id = "c318508642964c7b8186b71dd9efec59"
+
+[triggers]
+crons = ["*/15 * * * *"]
