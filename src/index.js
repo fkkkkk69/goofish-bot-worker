@@ -1,5 +1,7 @@
 // Cloudflare Worker: команды бота для Goofish-парсера (бренды/цены) + API для парсера
 
+const MAX_BRANDS = 5;
+
 const ALL_BRANDS = [
   "undercover",
   "number nine",
@@ -257,8 +259,16 @@ async function handleCommand(env, chatId, text, fromUsername) {
       await tgApi(env, "sendMessage", { chat_id: chatId, text: "Формат: добавить бренд <название>" });
       return;
     }
+    if (brand.length > 40) {
+      await tgApi(env, "sendMessage", { chat_id: chatId, text: "Название слишком длинное (макс. 40 символов)." });
+      return;
+    }
     let sub = (await getSub(env, chatId)) || emptySub();
     if (!sub.brands) sub.brands = [];
+    if (!sub.brands.includes(brand) && sub.brands.length >= MAX_BRANDS) {
+      await tgApi(env, "sendMessage", { chat_id: chatId, text: `Лимит — ${MAX_BRANDS} брендов. Убери один (убрать бренд <название>), чтобы добавить новый.` });
+      return;
+    }
     if (!sub.brands.includes(brand)) sub.brands.push(brand);
     await setSub(env, chatId, sub);
     await tgApi(env, "sendMessage", { chat_id: chatId, text: `Добавлен бренд: ${brand}` });
@@ -317,8 +327,16 @@ async function handleCommand(env, chatId, text, fromUsername) {
       return;
     }
     const brand = parts.slice(0, parts.length - 2).join(" ").toLowerCase();
+    if (!brand || brand.length > 40) {
+      await tgApi(env, "sendMessage", { chat_id: chatId, text: "Некорректное название бренда (макс. 40 символов)." });
+      return;
+    }
     let sub = (await getSub(env, chatId)) || emptySub();
     if (!sub.brands) sub.brands = [];
+    if (!sub.brands.includes(brand) && sub.brands.length >= MAX_BRANDS) {
+      await tgApi(env, "sendMessage", { chat_id: chatId, text: `Лимит — ${MAX_BRANDS} брендов. Убери один (убрать бренд <название>), чтобы добавить новый.` });
+      return;
+    }
     if (!sub.brands.includes(brand)) sub.brands.push(brand);
     if (!sub.brand_prices) sub.brand_prices = {};
     sub.brand_prices[brand] = { min, max };
