@@ -1,6 +1,6 @@
-// Cloudflare Worker: команды бота для Goofish-парсера (бренды/цены) + API для парсера
+import { createMenu, isPaidActive, MAX_BRANDS, groupAlphabet } from "./menu.js";
 
-const MAX_BRANDS = 5;
+// Cloudflare Worker: команды бота для Goofish-парсера (бренды/цены) + API для парсера
 
 const ALL_BRANDS = [
   "undercover",
@@ -166,8 +166,12 @@ function formatStatus(sub) {
   if (sub.global_price) {
     lines.push(`Общая цена по умолчанию: ¥${sub.global_price.min} — ¥${sub.global_price.max}`);
   }
+  lines.push(sub.types && sub.types.length ? `Типы: ${sub.types.join(", ")}` : "Типы: любые");
+  lines.push(sub.paid_until ? `Подписка до: ${sub.paid_until.slice(0, 10)}` : "Подписка: бесплатный доступ");
   return lines.join("\n");
 }
+
+const menu = createMenu({ tgApi, getSub, setSub, emptySub, ALL_BRANDS, SUPPORT: SUPPORT_LINE, SERVICE: "Goofish", formatStatus });
 
 async function handleCommand(env, chatId, text, fromUsername) {
   const [cmd, ...rest] = text.trim().split(/\s+/);
@@ -192,10 +196,15 @@ async function handleCommand(env, chatId, text, fromUsername) {
       await tgApi(env, "sendMessage", { chat_id: chatId, text: "Заявка ещё на рассмотрении." });
       return;
     }
+    await menu.showMenu(env, chatId);
+    return;
+  }
+
+  if (cmd === "помощь" || cmd === "/help") {
     await tgApi(env, "sendMessage", {
       chat_id: chatId,
       text:
-        "Привет! Команды:\n\n" +
+        "Текстовые команды (то же самое есть в /menu):\n\n" +
         "`добавить бренд <название>`\nдобавить бренд в отслеживание\n\n" +
         "`убрать бренд <название>`\nубрать бренд\n\n" +
         "`добавить цену <бренд> <мин> <макс>`\nзадать цену конкретному бренду\n\n" +
@@ -213,8 +222,13 @@ async function handleCommand(env, chatId, text, fromUsername) {
     return;
   }
 
+  if (cmd === "меню" || cmd === "/menu") {
+    await menu.showMenu(env, chatId);
+    return;
+  }
+
   if (cmd === "все" && rest[0] === "бренды") {
-    await tgApi(env, "sendMessage", { chat_id: chatId, text: ALL_BRANDS.join(", ") });
+    await tgApi(env, "sendMessage", { chat_id: chatId, text: groupAlphabet(ALL_BRANDS) });
     return;
   }
 
@@ -229,7 +243,10 @@ async function handleCommand(env, chatId, text, fromUsername) {
   }
 
   if (cmd === "очистить") {
-    await setSub(env, chatId, emptySub());
+    const prev = await getSub(env, chatId);
+    const fresh = emptySub();
+    if (prev && prev.paid_until) fresh.paid_until = prev.paid_until;
+    await setSub(env, chatId, fresh);
     await tgApi(env, "sendMessage", { chat_id: chatId, text: "Всё очищено: бренды и цены сброшены." });
     return;
   }
@@ -358,7 +375,7 @@ async function handleCommand(env, chatId, text, fromUsername) {
     return;
   }
 
-  await tgApi(env, "sendMessage", { chat_id: chatId, text: "Не понял команду. /start — список команд." });
+  await tgApi(env, "sendMessage", { chat_id: chatId, text: "Не понял команду. /menu — меню, «помощь» — текстовые команды." });
 }
 
 export default {
@@ -384,6 +401,18 @@ export default {
 
     if (url.pathname === "/webhook" && request.method === "POST") {
       const update = await request.json();
+      if (update.callback_query) {
+        await menu.onCallback(env, update.callback_query);
+        return new Response("ok");
+      }
+      if (update.pre_checkout_query) {
+        await tgApi(env, "answerPreCheckoutQuery", { pre_checkout_query_id: update.pre_checkout_query.id, ok: true });
+        return new Response("ok");
+      }
+      if (update.message && update.message.successful_payment) {
+        await menu.onPayment(env, update.message);
+        return new Response("ok");
+      }
       const msg = update.message;
       if (msg && msg.text) {
         if (msg.text.startsWith("/approve")) {
@@ -404,6 +433,20 @@ export default {
           await tgApi(env, "sendMessage", { chat_id: targetId, text: "Доступ одобрен! Напиши /start ещё раз, чтобы увидеть команды." });
           return new Response("ok");
         }
+        if (msg.text.startsWith("/grant") && String(msg.chat.id) === String(env.ADMIN_CHAT_ID)) {
+          const [, tid, days] = msg.text.trim().split(/\s+/);
+          if (!tid || !Number(days)) {
+            await tgApi(env, "sendMessage", { chat_id: msg.chat.id, text: "Формат: /grant <chat_id> <дней>" });
+          } else {
+            const until = await menu.grant(env, tid, Number(days));
+            await tgApi(env, "sendMessage", { chat_id: msg.chat.id, text: `Подписка ${tid} до ${until.slice(0, 10)}` });
+            await tgApi(env, "sendMessage", { chat_id: tid, text: `Подписка активна до ${until.slice(0, 10)}. /menu` });
+          }
+          return new Response("ok");
+        }
+        if (!msg.text.startsWith("/") && (await menu.onPendingText(env, msg.chat.id, msg.text))) {
+          return new Response("ok");
+        }
         await handleCommand(env, msg.chat.id, msg.text, msg.from && msg.from.username);
       }
       return new Response("ok");
@@ -419,6 +462,9 @@ export default {
       for (const k of list.keys) {
         const raw = await env.SUBSCRIBERS.get(k.name);
         const data = JSON.parse(raw);
+        const cid = k.name.replace("sub:", "");
+        if (data.paid_until && !isPaidActive(data)) continue; // подписка истекла
+        if (env.ENFORCE_PAID === "1" && String(cid) !== String(env.ADMIN_CHAT_ID) && !isPaidActive(data)) continue;
         if (data.active) {
           subs.push({ chat_id: k.name.replace("sub:", ""), ...data });
         }
