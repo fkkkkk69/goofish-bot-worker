@@ -1,3 +1,4 @@
+import { OFFER } from "./offer.js";
 import { createMenu, isPaidActive, MAX_BRANDS, groupAlphabet } from "./menu.js";
 
 // Cloudflare Worker: команды бота для Goofish-парсера (бренды/цены) + API для парсера
@@ -166,12 +167,13 @@ function formatStatus(sub) {
   if (sub.global_price) {
     lines.push(`Общая цена по умолчанию: ¥${sub.global_price.min} — ¥${sub.global_price.max}`);
   }
+  lines.push(sub.offer_accepted_at ? `Оферта: принята ${sub.offer_accepted_at.slice(0, 10)}` : "Оферта: не принята (раздел «Подписка»)");
   lines.push(sub.types && sub.types.length ? `Типы: ${sub.types.join(", ")}` : "Типы: любые");
   lines.push(sub.paid_until ? `Подписка до: ${sub.paid_until.slice(0, 10)}` : "Подписка: бесплатный доступ");
   return lines.join("\n");
 }
 
-const menu = createMenu({ tgApi, getSub, setSub, emptySub, ALL_BRANDS, SUPPORT: SUPPORT_LINE, SERVICE: "Goofish", formatStatus });
+const menu = createMenu({ tgApi, getSub, setSub, emptySub, ALL_BRANDS, SUPPORT: SUPPORT_LINE, SERVICE: "Goofish", OFFER, formatStatus });
 
 async function handleCommand(env, chatId, text, fromUsername) {
   const [cmd, ...rest] = text.trim().split(/\s+/);
@@ -219,6 +221,11 @@ async function handleCommand(env, chatId, text, fromUsername) {
         SUPPORT_LINE,
       parse_mode: "Markdown",
     });
+    return;
+  }
+
+  if (cmd === "условия" || cmd === "оферта" || cmd === "/terms") {
+    await menu.showOffer(env, chatId);
     return;
   }
 
@@ -438,8 +445,9 @@ export default {
           if (!tid || !Number(days)) {
             await tgApi(env, "sendMessage", { chat_id: msg.chat.id, text: "Формат: /grant <chat_id> <дней>" });
           } else {
+            const before = await getSub(env, tid);
             const until = await menu.grant(env, tid, Number(days));
-            await tgApi(env, "sendMessage", { chat_id: msg.chat.id, text: `Подписка ${tid} до ${until.slice(0, 10)}` });
+            await tgApi(env, "sendMessage", { chat_id: msg.chat.id, text: `Подписка ${tid} до ${until.slice(0, 10)}. Оферта: ${before && before.offer_accepted_at ? "принята" : "НЕ принята"}` });
             await tgApi(env, "sendMessage", { chat_id: tid, text: `Подписка активна до ${until.slice(0, 10)}. /menu` });
           }
           return new Response("ok");
